@@ -2,7 +2,9 @@ import os
 import glob
 import time
 import argparse
-
+"""
+./main.py --data-root /home/dmitry-strizhak/Documents/StudiesAI/Deep_Learning/Advanced\ DL/Code/datasets/cifar-10-python/cifar10 --data cifar100 --save /home/dmitry-strizhak/Documents/StudiesAI/Deep_Learning --arch msdnet --batch-size 64 --epochs 300 --nBlocks 7 --stepmode even --step 2 --base 4 --nChannels 16 -j 16
+"""
 model_names = ['msdnet']
 
 arg_parser = argparse.ArgumentParser(

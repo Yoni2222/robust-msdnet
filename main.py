@@ -42,7 +42,14 @@ import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
+print(torch.__version__)
+print(torch.version.cuda)
+print(torch.backends.cudnn.enabled)
 
+print(torch.cuda.is_available())
+print(torch.version.cuda)
+print(torch.cuda.get_device_name(0))
+print("line 49")
 torch.manual_seed(args.seed)
 
 def main():
@@ -59,11 +66,11 @@ def main():
         IM_SIZE = 224
 
     model = getattr(models, args.arch)(args)
-    n_flops, n_params = measure_model(model, IM_SIZE, IM_SIZE)    
+    n_flops, n_params = measure_model(model, IM_SIZE, IM_SIZE)
     torch.save(n_flops, os.path.join(args.save, 'flops.pth'))
     del(model)
-        
-        
+
+
     model = getattr(models, args.arch)(args)
 
     if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
@@ -135,7 +142,7 @@ def main():
     print('********** Final prediction results **********')
     validate(test_loader, model, criterion)
 
-    return 
+    return
 
 def train(train_loader, model, criterion, optimizer, epoch):
     batch_time = AverageMeter()
@@ -349,3 +356,5 @@ def adjust_learning_rate(optimizer, epoch, args, batch=None,
 
 if __name__ == '__main__':
     main()
+
+
