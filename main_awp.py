@@ -30,7 +30,7 @@ from argparse import ArgumentParser
 
 #############  ↓↓↓  ORIGINAL IMPORTS  ↓↓↓ #############
 from dataloader import get_dataloaders
-from adaptive_inference import dynamic_evaluate
+from adaptive_inference_adv import dynamic_evaluate
 import models
 from op_counter import measure_model
 ######################################################
@@ -172,7 +172,8 @@ def build_parser():
                             '(uses --attack / --epsilon / --alpha / --attack-iters)')
     evalg.add_argument('--autoattack', action='store_true',
                        help='run AutoAttack after loading the checkpoint')
-
+    evalg.add_argument('--dyn-eval', action='store_true',
+                       help='run dynamic-exit evaluation (uses adaptive_inference)')
     return parser
 
 args = build_parser().parse_args()
@@ -358,6 +359,8 @@ def main():
             robust_evaluate(test_loader, model, fn)
         elif args.autoattack:
             autoattack_eval(test_loader, model, norm=args.norm, eps=args.epsilon)
+        if args.dyn_eval:
+            dynamic_evaluate(model, test_loader, val_loader, args)
         sys.exit(0)
 
 
