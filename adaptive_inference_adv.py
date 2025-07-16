@@ -29,7 +29,7 @@ class Tester:
         self.args  = args
         self.sm    = nn.Softmax(1).cuda()
 
-        from main_awp import generate_adv             # PGD/FGSM generator
+        from adv_utils import generate_adv             # PGD/FGSM generator
         self.gen_adv = generate_adv
 
         if args.autoattack:
