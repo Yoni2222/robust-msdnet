@@ -471,6 +471,9 @@ def validate(val_loader, model, criterion):
     top1 = [AverageMeter() for _ in range(args.nBlocks)]
     top5 = [AverageMeter() for _ in range(args.nBlocks)]
 
+    flops_file = os.path.join(args.save, 'flops.pth')
+    n_flops = torch.load(flops_file)
+# switch to evaluate mode
     model.eval()
     end = time.time()
     with torch.no_grad():
@@ -508,6 +511,17 @@ def validate(val_loader, model, criterion):
 
     worst_exit = min(t.avg for t in top1)  # worst (lowest) prec@1
     print(f'Worst-exit prec@1: {worst_exit:.3f}')
+
+    full_net_flops = n_flops[-1]                       # run to last exit
+    print(f'Total FLOPs if every sample uses **all** exits: '
+          f'{full_net_flops/1e6:.2f} M')
+
+    # what was actually spent on this validation pass
+    samples = top1[-1].count
+    exp_flops = sum((top1[k].count / samples) * n_flops[k]
+                    for k in range(len(top1)))
+    print(f'Expected FLOPs with the observed early‑exit mix: '
+          f'{exp_flops/1e6:.2f} M')
     return losses.avg, top1[-1].avg, top5[-1].avg
 
 def robust_evaluate(data_loader, model, attack_fn):
