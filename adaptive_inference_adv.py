@@ -7,8 +7,17 @@ def dynamic_evaluate(model, test_loader, val_loader, args):
     tester = Tester(model, args)
     cache = os.path.join(args.save,
                          f'logits_{"aa" if args.autoattack else args.attack}.pth')
+
+
     if os.path.exists(cache):
         val_pred, val_t, test_pred, test_t = torch.load(cache)
+        if val_pred.size(0) != args.nBlocks:
+            print('cache‑mismatch, recomputing logits…')
+            os.remove(cache)
+            val_pred, val_t = tester.calc_logits(val_loader)
+            test_pred, test_t = tester.calc_logits(test_loader)
+            torch.save((val_pred, val_t, test_pred, test_t), cache)
+
     else:
         val_pred, val_t = tester.calc_logits(val_loader)
         test_pred, test_t = tester.calc_logits(test_loader)

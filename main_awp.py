@@ -298,7 +298,7 @@ def main():
     # dirs
     os.makedirs(args.save, exist_ok=True)
 
-    # flop counter (unchanged)
+
     sample_model = getattr(models, args.arch)(args)
     n_flops, n_params = measure_model(sample_model, 32 if args.data.startswith('cifar') else 224, 32)
     torch.save(n_flops, os.path.join(args.save, 'flops.pth'))
