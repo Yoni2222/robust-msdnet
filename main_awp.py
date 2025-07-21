@@ -174,6 +174,12 @@ def build_parser():
                        help='run AutoAttack after loading the checkpoint')
     evalg.add_argument('--dyn-eval', action='store_true',
                        help='run dynamic-exit evaluation (uses adaptive_inference)')
+    evalg.add_argument('--target-p', type=float, default=None,
+                       help='If set, compute thresholds for ONE p only '
+                            '(e.g. 0.35 instead of the full sweep)')
+    evalg.add_argument('--npy-T', type=str, default=None,
+                       help='Path to .npy file for saving the resulting '
+                            'per‑exit confidence thresholds')
     return parser
 
 args = build_parser().parse_args()

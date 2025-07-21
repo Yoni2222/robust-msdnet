@@ -45,18 +45,50 @@ def dynamic_evaluate(model, test_loader, val_loader, args):
     assert len(flops) == val_pred.size(0)
     results = []
     m = val_pred.size(0)
-    for p in range(1, 40):
-        """prob = torch.exp(torch.log(torch.tensor(p/20.0)) *
-                         torch.arange(1, args.nBlocks+1))"""
-        prob = torch.exp(torch.log(torch.tensor(p / 20.0)) *
+    # for p in range(1, 40):
+    #     """prob = torch.exp(torch.log(torch.tensor(p/20.0)) *
+    #                      torch.arange(1, args.nBlocks+1))"""
+    #     prob = torch.exp(torch.log(torch.tensor(p / 20.0)) *
+    #                      torch.arange(1, m + 1, device=val_pred.device))
+    #     prob /= prob.sum()
+    #     acc_v, _, T = tester.find_T(val_pred, val_t, prob, flops)
+    #     acc_t, expf = tester.apply_T(test_pred, test_t, flops, T)
+    #     print(f'p={p / 20:.2f} | val {acc_v:5.2f}  test {acc_t:5.2f}  '
+    #           f'FLOPs {expf / 1e6:6.2f} M')
+    #     results.append([p / 20, float(acc_t), float(expf)])
+
+
+    # ---------- choose operating points ---------------------------------
+    results = []
+    m = val_pred.size(0)
+
+    def _run_for_one_p(p_val: float):
+        """Compute thresholds + accuracy + FLOPs for a single p."""
+        prob = torch.exp(torch.log(torch.tensor(p_val)) *
                          torch.arange(1, m + 1, device=val_pred.device))
         prob /= prob.sum()
+
         acc_v, _, T = tester.find_T(val_pred, val_t, prob, flops)
         acc_t, expf = tester.apply_T(test_pred, test_t, flops, T)
-        print(f'p={p / 20:.2f} | val {acc_v:5.2f}  test {acc_t:5.2f}  '
-              f'FLOPs {expf / 1e6:6.2f} M')
-        results.append([p / 20, float(acc_t), float(expf)])
+        print(f'p={p_val:.2f} | val {acc_v:5.2f}  test {acc_t:5.2f}  '
+              f'FLOPs {expf / 1e6:6.2f} M')
+        results.append([p_val, float(acc_t), float(expf)])
+        return T
 
+    # (A) --- deploy / single‑p mode -------------------------------------
+    if args.target_p is not None:
+        T = _run_for_one_p(args.target_p)
+
+        # optional threshold dump
+        if args.npy_T is not None:
+            import numpy as np
+            np.save(args.npy_T, T.cpu().numpy())
+            print(f'Saved thresholds →  {args.npy_T}')
+
+    # (B) --- classic dynamic‑eval sweep (default) -----------------------
+    else:
+        for p_idx in range(1, 40):  # 0.05 … 1.95
+            _run_for_one_p(p_idx / 20.0)
     import csv
     out_file = os.path.join(args.save,
                             f'robust_vs_flops_{"aa" if args.autoattack else "pgd"}.tsv')
