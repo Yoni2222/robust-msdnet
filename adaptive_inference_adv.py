@@ -40,9 +40,6 @@ def dynamic_evaluate(model, test_loader, val_loader, args):
     print('# entries in flops:', len(flops))
     assert len(flops) == val_pred.size(0)
 
-    print('# exits in logits :', val_pred.size(0))
-    print('# entries in flops:', len(flops))
-    assert len(flops) == val_pred.size(0)
     results = []
     m = val_pred.size(0)
     # for p in range(1, 40):
