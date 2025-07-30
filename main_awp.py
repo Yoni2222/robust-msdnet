@@ -783,7 +783,7 @@ def train(train_loader, model, criterion, gate_criterion, optimizer, epoch, awp_
         cls_outs, gate_outs = model(x_adv, return_gates=True)
 
         # CE over exits
-        ce_loss = sum(criterion(o, y) for o in cls_outs) / len(cls_outs)
+        ce_loss = sum(criterion(get_cls(o), y) for o in cls_outs) / len(cls_outs)
 
         # Gate targets: 1 if exit prediction correct else 0
         with torch.no_grad():
@@ -804,7 +804,7 @@ def train(train_loader, model, criterion, gate_criterion, optimizer, epoch, awp_
 
         # accuracy logging
         for j, out in enumerate(cls_outs):
-            prec1, prec5 = accuracy(out.data, y, topk=(1, 5))
+            prec1, prec5 = accuracy(get_cls(out.data), y, topk=(1, 5))
             top1[j].update(prec1.item(), x.size(0))
             top5[j].update(prec5.item(), x.size(0))
 
@@ -857,11 +857,15 @@ def validate(val_loader, model, criterion, gate_criterion):
                 if not isinstance(outputs, list):
                     outputs = [outputs]
 
-            loss = sum(criterion(o, y) for o in outputs) / len(outputs)
+            #loss = sum(criterion(get_cls(o), y) for o in outputs) / len(outputs)
+            cls_logits = [get_cls(o) for o in outputs]
+            loss = sum(criterion(l, y) for l in cls_logits) / len(cls_logits)
             losses.update(loss.item(), x.size(0))
 
-            for j, out in enumerate(outputs):
-                prec1, prec5 = accuracy(out.data, y, topk=(1, 5))
+            #for j, out in enumerate(outputs):
+            for j, l in enumerate(cls_logits):
+                #prec1, prec5 = accuracy(get_cls(out.data), y, topk=(1, 5))
+                prec1, prec5 = accuracy(l, y, topk=(1, 5))
                 # when use_gates_infer=True there is only one output; we log it as "last"
                 idx = j if not args.use_gates_infer else (args.nBlocks - 1)
                 top1[idx].update(prec1.item(), x.size(0))
@@ -916,8 +920,10 @@ def robust_evaluate(data_loader, model, attack_fn, gate_criterion):
                     outs = [outs]
                 exits_to_count = list(range(len(outs)))
 
-            for j_idx, logits in zip(exits_to_count, outs):
-                pred = logits.argmax(dim=1)
+            #for j_idx, logits in zip(exits_to_count, outs):
+            for j_idx, out in zip(exits_to_count, outs):
+                pred = get_cls(out).argmax(dim=1)
+                #pred = logits.argmax(dim=1)
                 correct[j_idx] += (pred == y).sum().item()
 
         total += y.size(0)
@@ -969,6 +975,10 @@ def adjust_learning_rate(optimizer, epoch, args, batch=None, nBatch=None, method
             lr = args.lr * (0.1 ** (epoch // 30))
     for pg in optimizer.param_groups: pg['lr'] = lr
     return lr
+
+def get_cls(o):
+    # works for both (logit, gate_logit) and plain logit
+    return o[0] if isinstance(o, (list, tuple)) else o
 
 def save_checkpoint(state, args, is_best, filename):
     ckpt_dir = os.path.join(args.save, 'save_models'); os.makedirs(ckpt_dir, exist_ok=True)
