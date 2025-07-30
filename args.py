@@ -44,7 +44,7 @@ data_group.add_argument('-j', '--workers', default=4, type=int, metavar='N',
 arch_group = arg_parser.add_argument_group('arch',
                                            'model architecture setting')
 arch_group.add_argument('--arch', '-a', metavar='ARCH', default='resnet',
-                        type=str, choices=model_names,
+                        type=str, choices=['msdnet', 'msdnet_gated'],
                         help='model architecture: ' +
                         ' | '.join(model_names) +
                         ' (default: msdnet)')
