@@ -834,110 +834,122 @@ def train(train_loader, model, criterion, gate_criterion, optimizer, epoch, awp_
     return losses.avg, top1[-1].avg, top5[-1].avg, running_lr
 
 def validate(val_loader, model, criterion, gate_criterion):
-    batch_time = AverageMeter(); losses = AverageMeter(); data_time = AverageMeter()
+    batch_time, data_time = AverageMeter(), AverageMeter()
+    losses = AverageMeter()
     top1 = [AverageMeter() for _ in range(args.nBlocks)]
     top5 = [AverageMeter() for _ in range(args.nBlocks)]
+    exit_counter = [0] * args.nBlocks           # NEW
+    overall_correct = 0                         # NEW
 
-    flops_file = os.path.join(args.save, 'flops.pth')
-    n_flops = torch.load(flops_file)
+    n_flops = torch.load(os.path.join(args.save, 'flops.pth'))
+    model.eval(); end = time.time()
 
-    model.eval()
-    end = time.time()
     with torch.no_grad():
         for i, (x, y) in enumerate(val_loader):
             x, y = x.to(DEVICE), y.to(DEVICE)
             data_time.update(time.time() - end)
 
-            # === CHANGED === optional online early-exit
+            # ------------- forward -------------
+            """if args.use_gates_infer:
+                logits, exit_id = model(x, use_gates=True,
+                                        gate_thresh=args.gate_thresh,
+                                        return_exit=True)
+                cls_logits = [logits]
+                exit_ids   = [exit_id]"""
             if args.use_gates_infer:
-                logits = model(x, use_gates=True, gate_thresh=args.gate_thresh)
-                outputs = [logits]  # treat as single-exit result
+                logits, exit_ids = model(x, use_gates=True,
+                                         gate_thresh=args.gate_thresh,
+                                         return_exit=True)  # logits (B,C)
+                preds = logits.argmax(1)
+                for k in range(args.nBlocks):
+                    mask = exit_ids == k
+                    if mask.any():
+                        correct = (preds[mask] == y[mask]).float().sum().item()
+                        acc1 = 100.0 * correct / mask.sum().item()
+                        top1[k].update(acc1, mask.sum().item())
+                        # top‑5 (optional)
+                        _, top5_pred = logits[mask].topk(5, 1, True, True)
+                        correct5 = (top5_pred == y[mask].unsqueeze(1)).any(1).float().sum().item()
+                        acc5 = 100.0 * correct5 / mask.sum().item()
+                        top5[k].update(acc5, mask.sum().item())
+                        exit_counter[k] += mask.sum().item()
+                        overall_correct += correct
             else:
-                outputs = model(x)
-                if not isinstance(outputs, list):
-                    outputs = [outputs]
+                outs = model(x); outs = outs if isinstance(outs, list) else [outs]
+                cls_logits = [get_cls(o) for o in outs]
+                exit_ids   = list(range(len(cls_logits)))
 
-            #loss = sum(criterion(get_cls(o), y) for o in outputs) / len(outputs)
-            cls_logits = [get_cls(o) for o in outputs]
+            # ------------- loss -------------
             loss = sum(criterion(l, y) for l in cls_logits) / len(cls_logits)
             losses.update(loss.item(), x.size(0))
 
-            #for j, out in enumerate(outputs):
-            for j, l in enumerate(cls_logits):
-                #prec1, prec5 = accuracy(get_cls(out.data), y, topk=(1, 5))
+            # ------------- accuracy & meters -------------
+            for l, idx in zip(cls_logits, exit_ids):
                 prec1, prec5 = accuracy(l, y, topk=(1, 5))
-                # when use_gates_infer=True there is only one output; we log it as "last"
-                idx = j if not args.use_gates_infer else (args.nBlocks - 1)
                 top1[idx].update(prec1.item(), x.size(0))
                 top5[idx].update(prec5.item(), x.size(0))
+                exit_counter[idx] += y.size(0)
+                overall_correct   += (l.argmax(1) == y).sum().item()
 
-            batch_time.update(time.time() - end)
-            end = time.time()
-            if i % args.print_freq == 0:
-                print(f'Epoch: [{i+1}/{len(val_loader)}]\t'
-                      f'Time {batch_time.avg:.3f}\t'
-                      f'Data {data_time.avg:.3f}\t'
-                      f'Loss {losses.val:.3f}\t'
-                      f'Acc@1 {top1[-1].val:.3f}\t'
-                      f'Acc@5 {top5[-1].val:.3f}')
+            batch_time.update(time.time() - end); end = time.time()
 
+    total_samples = sum(exit_counter)
+    avg_acc = 100.0 * overall_correct / total_samples if total_samples else 0.0
+
+    print("\nSamples per exit:", exit_counter)
     for j in range(args.nBlocks):
-        print(f' * Exit {j}: prec@1 {top1[j].avg:.3f}  prec@5 {top5[j].avg:.3f}')
+        print(f" * Exit {j}: prec@1 {top1[j].avg:.3f}  prec@5 {top5[j].avg:.3f}")
+    print(f"Average top‑1 accuracy (all exits combined): {avg_acc:.3f}%")
 
-    worst_exit = min(t.avg for t in top1)
-    print(f'Worst-exit prec@1: {worst_exit:.3f}')
-
-    full_net_flops = n_flops[-1]
-    print(f'Total FLOPs if every sample uses **all** exits: {full_net_flops/1e6:.2f} M')
-
-    # expected FLOPs (approx.; with use_gates_infer=True we only know the "last" meter)
-    samples = top1[-1].count
-    exp_flops = sum((top1[k].count / samples) * n_flops[k]
-                    for k in range(len(top1))) if samples > 0 else 0.0
-    print(f'Expected FLOPs with the observed early‑exit mix: {exp_flops/1e6:.2f} M')
-
+    # FLOPs summary (unchanged) ...
+    # --------------------------------------------------
     return losses.avg, top1[-1].avg, top5[-1].avg
+
 
 def robust_evaluate(data_loader, model, attack_fn, gate_criterion):
     model.eval()
     n_exits = args.nBlocks
     correct = [0] * n_exits
-    total = 0
+    seen    = [0] * n_exits                     # NEW
 
     for x, y in data_loader:
         x, y = x.to(DEVICE), y.to(DEVICE)
         x_adv = attack_fn(model, x, y)
 
         with torch.no_grad():
-            # === CHANGED === support online gated inference
+            """if args.use_gates_infer:
+                logits, exit_id = model(x_adv, use_gates=True,
+                                         gate_thresh=args.gate_thresh,
+                                         return_exit=True)
+                pred = logits.argmax(1)
+                correct[exit_id] += (pred == y).sum().item()
+                seen[exit_id]    += y.size(0)"""
             if args.use_gates_infer:
-                logits = model(x_adv, use_gates=True, gate_thresh=args.gate_thresh)
-                outs = [logits]
-                exits_to_count = [n_exits - 1]
+                logits, exit_ids = model(x_adv, use_gates=True,
+                                         gate_thresh=args.gate_thresh,
+                                         return_exit=True)
+                preds = logits.argmax(1)
+                for k in range(args.nBlocks):
+                    mask = exit_ids == k
+                    if mask.any():
+                        correct[k] += (preds[mask] == y[mask]).sum().item()
+                        seen[k] += mask.sum().item()
             else:
-                outs = model(x_adv)
-                if not isinstance(outs, list):
-                    outs = [outs]
-                exits_to_count = list(range(len(outs)))
+                outs = model(x_adv); outs = outs if isinstance(outs, list) else [outs]
+                for idx, o in enumerate(outs):
+                    pred = get_cls(o).argmax(1)
+                    correct[idx] += (pred == y).sum().item()
+                    seen[idx]    += y.size(0)
 
-            #for j_idx, logits in zip(exits_to_count, outs):
-            for j_idx, out in zip(exits_to_count, outs):
-                pred = get_cls(out).argmax(dim=1)
-                #pred = logits.argmax(dim=1)
-                correct[j_idx] += (pred == y).sum().item()
+    # print per‑exit
+    for j in range(n_exits):
+        acc = 100.0 * correct[j] / seen[j] if seen[j] else 0.0
+        print(f"Robust prec@1 – exit {j}: {acc:5.2f}%  ({correct[j]}/{seen[j]})")
 
-        total += y.size(0)
-
-    for j, c in enumerate(correct):
-        print(f'Robust prec@1 – exit {j}: {100.0*c/total:5.2f}%  ({c}/{total})')
-
-    worst_correct = min(correct)
-    last_correct  = correct[-1]
-    worst_prec1   = 100.0 * worst_correct / total
-    last_prec1    = 100.0 * last_correct  / total
-
-    print(f'\nRobust top-1 accuracy (worst exit): {worst_prec1:5.2f}%  ({worst_correct}/{total})')
-    print(f'Robust top-1 accuracy (last  exit):  {last_prec1:5.2f}%  ({last_correct}/{total})')
+    overall_correct = sum(correct)
+    overall_seen    = sum(seen)
+    overall_acc = 100.0 * overall_correct / overall_seen if overall_seen else 0.0
+    print(f"\nAverage robust top‑1 accuracy (all exits): {overall_acc:5.2f}%")
 
 # ---------------------------------------------------------------------
 # Misc

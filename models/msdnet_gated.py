@@ -4,343 +4,359 @@ import torch
 import torch.nn as nn
 
 # ---------------------------------------------------------------------
-# Unchanged helper modules
+# Helper modules (unchanged)
 # ---------------------------------------------------------------------
 class ConvBasic(nn.Module):
     def __init__(self, nIn, nOut, kernel=3, stride=1, padding=1):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv2d(nIn, nOut, kernel_size=kernel, stride=stride,
-                      padding=padding, bias=False),
+            nn.Conv2d(nIn, nOut, kernel, stride, padding, bias=False),
             nn.BatchNorm2d(nOut),
             nn.ReLU(True)
         )
-    def forward(self, x):
-        return self.net(x)
+    def forward(self, x): return self.net(x)
 
 class ConvBN(nn.Module):
-    def __init__(self, nIn, nOut, type: str, bottleneck, bnWidth):
+    def __init__(self, nIn, nOut, typ: str, bottleneck, bnWidth):
         super().__init__()
-        layer = []
-        nInner = nIn
+        layers, nInner = [], nIn
         if bottleneck:
             nInner = min(nInner, bnWidth * nOut)
-            layer += [
-                nn.Conv2d(nIn, nInner, kernel_size=1, stride=1, padding=0, bias=False),
+            layers += [
+                nn.Conv2d(nIn, nInner, 1, bias=False),
                 nn.BatchNorm2d(nInner),
                 nn.ReLU(True)
             ]
-        if type == 'normal':
-            layer.append(nn.Conv2d(nInner, nOut, 3, 1, 1, bias=False))
-        elif type == 'down':
-            layer.append(nn.Conv2d(nInner, nOut, 3, 2, 1, bias=False))
+        if typ == "normal":
+            layers.append(nn.Conv2d(nInner, nOut, 3, 1, 1, bias=False))
+        elif typ == "down":
+            layers.append(nn.Conv2d(nInner, nOut, 3, 2, 1, bias=False))
         else:
-            raise ValueError("type must be 'normal' or 'down'")
-        layer += [nn.BatchNorm2d(nOut), nn.ReLU(True)]
-        self.net = nn.Sequential(*layer)
-    def forward(self, x):
-        return self.net(x)
+            raise ValueError
+        layers += [nn.BatchNorm2d(nOut), nn.ReLU(True)]
+        self.net = nn.Sequential(*layers)
+    def forward(self, x): return self.net(x)
 
 class ConvDownNormal(nn.Module):
-    def __init__(self, nIn1, nIn2, nOut, bottleneck, bnWidth1, bnWidth2):
+    def __init__(self, nIn1, nIn2, nOut, bottleneck, bnW1, bnW2):
         super().__init__()
-        self.conv_down   = ConvBN(nIn1, nOut // 2, 'down',   bottleneck, bnWidth1)
-        self.conv_normal = ConvBN(nIn2, nOut // 2, 'normal', bottleneck, bnWidth2)
+        self.conv_down   = ConvBN(nIn1, nOut // 2, "down",   bottleneck, bnW1)
+        self.conv_normal = ConvBN(nIn2, nOut // 2, "normal", bottleneck, bnW2)
     def forward(self, x):
         res = [x[1], self.conv_down(x[0]), self.conv_normal(x[1])]
-        return torch.cat(res, dim=1)
+        return torch.cat(res, 1)
 
 class ConvNormal(nn.Module):
-    def __init__(self, nIn, nOut, bottleneck, bnWidth):
+    def __init__(self, nIn, nOut, bottleneck, bnW):
         super().__init__()
-        self.conv_normal = ConvBN(nIn, nOut, 'normal', bottleneck, bnWidth)
+        #self.conv = ConvBN(nIn, nOut, "normal", bottleneck, bnW)
+        self.conv_normal = ConvBN(nIn, nOut, "normal", bottleneck, bnW)
     def forward(self, x):
-        if not isinstance(x, list):
-            x = [x]
+        if not isinstance(x, list): x = [x]
         res = [x[0], self.conv_normal(x[0])]
-        return torch.cat(res, dim=1)
+        return torch.cat(res, 1)
 
 class MSDNFirstLayer(nn.Module):
     def __init__(self, nIn, nOut, args):
         super().__init__()
         self.layers = nn.ModuleList()
-        if args.data.startswith('cifar'):
-            self.layers.append(ConvBasic(nIn, nOut * args.grFactor[0],
-                                         kernel=3, stride=1, padding=1))
-        elif args.data == 'ImageNet':
+        if args.data.startswith("cifar"):
+            self.layers.append(ConvBasic(nIn, nOut * args.grFactor[0], 3, 1, 1))
+        elif args.data == "ImageNet":
             self.layers.append(nn.Sequential(
                 nn.Conv2d(nIn, nOut * args.grFactor[0], 7, 2, 3),
                 nn.BatchNorm2d(nOut * args.grFactor[0]),
-                nn.ReLU(inplace=True),
+                nn.ReLU(True),
                 nn.MaxPool2d(3, 2, 1)
             ))
         nIn = nOut * args.grFactor[0]
         for i in range(1, args.nScales):
-            self.layers.append(ConvBasic(nIn, nOut * args.grFactor[i],
-                                         kernel=3, stride=2, padding=1))
+            self.layers.append(ConvBasic(nIn, nOut * args.grFactor[i], 3, 2, 1))
             nIn = nOut * args.grFactor[i]
     def forward(self, x):
         res = []
-        for i in range(len(self.layers)):
-            x = self.layers[i](x)
-            res.append(x)
+        for l in self.layers:
+            x = l(x); res.append(x)
         return res
 
 class MSDNLayer(nn.Module):
     def __init__(self, nIn, nOut, args, inScales=None, outScales=None):
         super().__init__()
-        self.nIn = nIn
-        self.nOut = nOut
-        self.inScales  = inScales  if inScales  is not None else args.nScales
-        self.outScales = outScales if outScales is not None else args.nScales
+        self.nScales  = args.nScales
+        self.inScales = inScales  if inScales  is not None else args.nScales
+        self.outScales= outScales if outScales is not None else args.nScales
+        self.discard  = self.inScales - self.outScales
+        self.offset   = self.nScales - self.outScales
+        self.layers   = nn.ModuleList()
 
-        self.nScales = args.nScales
-        self.discard = self.inScales - self.outScales
-        self.offset  = self.nScales - self.outScales
-        self.layers  = nn.ModuleList()
-
+        # first output scale
         if self.discard > 0:
-            nIn1  = nIn * args.grFactor[self.offset - 1]
-            nIn2  = nIn * args.grFactor[self.offset]
-            _nOut = nOut * args.grFactor[self.offset]
-            self.layers.append(ConvDownNormal(nIn1, nIn2, _nOut, args.bottleneck,
-                                              args.bnFactor[self.offset - 1],
-                                              args.bnFactor[self.offset]))
+            nIn1 = nIn * args.grFactor[self.offset - 1]
+            nIn2 = nIn * args.grFactor[self.offset]
+            nO   = nOut * args.grFactor[self.offset]
+            self.layers.append(ConvDownNormal(nIn1, nIn2, nO, args.bottleneck,
+                                               args.bnFactor[self.offset - 1],
+                                               args.bnFactor[self.offset]))
         else:
-            self.layers.append(ConvNormal(nIn * args.grFactor[self.offset],
-                                          nOut * args.grFactor[self.offset],
-                                          args.bottleneck,
-                                          args.bnFactor[self.offset]))
+            self.layers.append(
+                ConvNormal(nIn * args.grFactor[self.offset],
+                           nOut * args.grFactor[self.offset],
+                           args.bottleneck, args.bnFactor[self.offset])
+            )
+        # remaining scales
         for i in range(self.offset + 1, self.nScales):
-            nIn1  = nIn * args.grFactor[i - 1]
-            nIn2  = nIn * args.grFactor[i]
-            _nOut = nOut * args.grFactor[i]
-            self.layers.append(ConvDownNormal(nIn1, nIn2, _nOut, args.bottleneck,
-                                              args.bnFactor[i - 1],
-                                              args.bnFactor[i]))
+            nIn1 = nIn * args.grFactor[i - 1]
+            nIn2 = nIn * args.grFactor[i]
+            nO   = nOut * args.grFactor[i]
+            self.layers.append(ConvDownNormal(nIn1, nIn2, nO, args.bottleneck,
+                                               args.bnFactor[i - 1],
+                                               args.bnFactor[i]))
     def forward(self, x):
         if self.discard > 0:
-            inp = []
-            for i in range(1, self.outScales + 1):
-                inp.append([x[i - 1], x[i]])
+            inp = [[x[i-1], x[i]] for i in range(1, self.outScales + 1)]
         else:
-            inp = [[x[0]]]
-            for i in range(1, self.outScales):
-                inp.append([x[i - 1], x[i]])
-        res = []
-        for i in range(self.outScales):
-            res.append(self.layers[i](inp[i]))
-        return res
+            inp = [[x[0]]] + [[x[i-1], x[i]] for i in range(1, self.outScales)]
+        return [layer(t) for layer, t in zip(self.layers, inp)]
 
 class ParallelModule(nn.Module):
-    def __init__(self, parallel_modules):
-        super().__init__()
-        self.m = nn.ModuleList(parallel_modules)
-    def forward(self, x):
-        res = []
-        for i in range(len(x)):
-            res.append(self.m[i](x[i]))
-        return res
+    def __init__(self, mods): super().__init__(); self.m = nn.ModuleList(mods)
+    def forward(self, x): return [m(t) for m, t in zip(self.m, x)]
 
 class ClassifierModule(nn.Module):
-    def __init__(self, m, channel, num_classes):
+    def __init__(self, m, c_in, n_cls):
         super().__init__()
         self.m = m
-        self.linear = nn.Linear(channel, num_classes)
+        self.linear = nn.Linear(c_in, n_cls)
     def forward(self, x):
-        res = self.m(x[-1])
-        res = res.view(res.size(0), -1)
-        return self.linear(res)
+        z = self.m(x[-1])
+        z = z.view(z.size(0), -1)
+        return self.linear(z)
 
 # ---------------------------------------------------------------------
-# === NEW === Gate head
+# Gate head – predicts P(correct) for current exit
 # ---------------------------------------------------------------------
 class GateHead(nn.Module):
-    """
-    Predicts 'this exit is correct' probability for the **current sample**.
-    Output is a single logit per sample (apply sigmoid outside if needed).
-    """
     def __init__(self, in_ch):
         super().__init__()
         self.g = nn.Sequential(
-            nn.Conv2d(in_ch, 128, kernel_size=1, bias=False),
+            nn.Conv2d(in_ch, 128, 1, bias=False),
             nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
+            nn.ReLU(True),
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(128, 1)
         )
-    def forward(self, feat):
-        return self.g(feat)  # (B,1) logits
+    def forward(self, feat): return self.g(feat)  # (B,1) logits
 
 # ---------------------------------------------------------------------
-# MSDNet with gates
+# MSDNet + gates
 # ---------------------------------------------------------------------
 class MSDNet(nn.Module):
     def __init__(self, args):
         super().__init__()
-        self.blocks     = nn.ModuleList()
+        self.args = args
+        self.blocks      = nn.ModuleList()
         self.classifier = nn.ModuleList()
-        # === NEW ===
-        self.gates      = nn.ModuleList()
-        self.block_channels = []               # record per-exit finest-scale channels
+        self.gates       = nn.ModuleList()
+        self.block_ch    = []
+        self.nBlocks     = args.nBlocks
 
-        self.nBlocks = args.nBlocks
-        self.steps   = [args.base]
-        self.args    = args
-
-        n_layers_all, n_layer_curr = args.base, 0
+        # --- compute steps per block ---
+        self.steps, n_layer_curr, n_total = [args.base], 0, args.base
         for i in range(1, self.nBlocks):
-            self.steps.append(args.step if args.stepmode == 'even'
-                              else args.step * i + 1)
-            n_layers_all += self.steps[-1]
+            step = args.step if args.stepmode == "even" else args.step * i + 1
+            self.steps.append(step); n_total += step
+        print("building network of steps:", self.steps, n_total)
 
-        print("building network of steps: ")
-        print(self.steps, n_layers_all)
-
+        # --- build blocks ---
         nIn = args.nChannels
         for i in range(self.nBlocks):
-            print(' ********************** Block {}  **********************'.format(i + 1))
-            m, nIn = self._build_block(nIn, args, self.steps[i], n_layers_all, n_layer_curr)
-            self.blocks.append(m)
+            print(f"\n **** Block {i+1} ****")
+            block, nIn = self._build_block(nIn, args, self.steps[i],
+                                           n_total, n_layer_curr)
             n_layer_curr += self.steps[i]
+            self.blocks.append(block)
 
-            # channels used by this exit (finest scale)
             cls_in_ch = nIn * args.grFactor[-1]
-            self.block_channels.append(cls_in_ch)
-
-            if args.data.startswith('cifar100'):
+            self.block_ch.append(cls_in_ch)
+            if args.data.startswith("cifar100"):
                 self.classifier.append(self._build_classifier_cifar(cls_in_ch, 100))
-            elif args.data.startswith('cifar10'):
+            elif args.data.startswith("cifar10"):
                 self.classifier.append(self._build_classifier_cifar(cls_in_ch, 10))
-            elif args.data == 'ImageNet':
+            elif args.data == "ImageNet":
                 self.classifier.append(self._build_classifier_imagenet(cls_in_ch, 1000))
             else:
                 raise NotImplementedError
-            print("")
 
-        # === NEW === build gate heads
-        for ch in self.block_channels:
+        # --- gate heads ---
+        for ch in self.block_ch:
             self.gates.append(GateHead(ch))
 
-        # weight init
-        for m in self.blocks:
-            if hasattr(m, '__iter__'):
-                for _m in m:
-                    self._init_weights(_m)
-            else:
-                self._init_weights(m)
-        for m in self.classifier:
-            if hasattr(m, '__iter__'):
-                for _m in m:
-                    self._init_weights(_m)
-            else:
-                self._init_weights(m)
-        # GateHead is built from Conv/BN/Linear → covered by _init_weights
-        for g in self.gates:
-            for _m in g.modules():
-                self._init_weights(_m)
+        # init weights
+        self.apply(self._init_weights)
 
+    # --------------------------- helpers ------------------------------
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-            m.weight.data.normal_(0, math.sqrt(2. / n))
+            nn.init.kaiming_normal_(m.weight, mode='fan_out')
         elif isinstance(m, nn.BatchNorm2d):
-            m.weight.data.fill_(1)
-            m.bias.data.zero_()
+            nn.init.constant_(m.weight, 1); nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.Linear):
-            m.bias.data.zero_()
+            nn.init.normal_(m.weight, 0, 0.01); nn.init.constant_(m.bias, 0)
 
-    def _build_block(self, nIn, args, step, n_layer_all, n_layer_curr):
-        layers = [MSDNFirstLayer(3, nIn, args)] if n_layer_curr == 0 else []
+    def _build_block(self, nIn, args, step, n_total, n_curr):
+        layers = [MSDNFirstLayer(3, nIn, args)] if n_curr == 0 else []
         for _ in range(step):
-            n_layer_curr += 1
-            inScales = args.nScales
-            outScales = args.nScales
-            if args.prune == 'min':
-                inScales  = min(args.nScales, n_layer_all - n_layer_curr + 2)
-                outScales = min(args.nScales, n_layer_all - n_layer_curr + 1)
-            elif args.prune == 'max':
-                interval  = math.ceil(1.0 * n_layer_all / args.nScales)
-                inScales  = args.nScales - math.floor(1.0 * (max(0, n_layer_curr - 2)) / interval)
-                outScales = args.nScales - math.floor(1.0 * (n_layer_curr - 1) / interval)
+            n_curr += 1
+            inSc, outSc = args.nScales, args.nScales
+            if args.prune == "min":
+                inSc  = min(args.nScales, n_total - n_curr + 2)
+                outSc = min(args.nScales, n_total - n_curr + 1)
+            elif args.prune == "max":
+                interval = math.ceil(n_total / args.nScales)
+                inSc  = args.nScales - math.floor(max(0, n_curr - 2) / interval)
+                outSc = args.nScales - math.floor((n_curr - 1) / interval)
             else:
                 raise ValueError
-
-            layers.append(MSDNLayer(nIn, args.growthRate, args, inScales, outScales))
-            print('|\t\tinScales {} outScales {} inChannels {} outChannels {}\t\t|'
-                  .format(inScales, outScales, nIn, args.growthRate))
-
+            layers.append(MSDNLayer(nIn, args.growthRate, args, inSc, outSc))
+            print(f"| inScales {inSc} outScales {outSc} "
+                  f"inCh {nIn} outCh {args.growthRate} |")
             nIn += args.growthRate
-            if args.prune == 'max' and inScales > outScales and args.reduction > 0:
-                offset = args.nScales - outScales
-                layers.append(self._build_transition(nIn, math.floor(1.0 * args.reduction * nIn),
-                                                     outScales, offset, args))
-                _t = nIn
-                nIn = math.floor(1.0 * args.reduction * nIn)
-                print('|\t\tTransition layer inserted! (max), inChannels {}, outChannels {}\t|'
-                      .format(_t, math.floor(1.0 * args.reduction * _t)))
-            elif args.prune == 'min' and args.reduction > 0 and \
-                 ((n_layer_curr == math.floor(1.0 * n_layer_all / 3)) or
-                  n_layer_curr == math.floor(2.0 * n_layer_all / 3)):
-                offset = args.nScales - outScales
-                layers.append(self._build_transition(nIn, math.floor(1.0 * args.reduction * nIn),
-                                                     outScales, offset, args))
-                nIn = math.floor(1.0 * args.reduction * nIn)
-                print('|\t\tTransition layer inserted! (min)\t|')
+            # transition
+            if args.reduction > 0 and (
+                (args.prune == "max" and inSc > outSc) or
+                (args.prune == "min" and n_curr in {n_total//3, 2*n_total//3})
+            ):
+                off = args.nScales - outSc
+                layers.append(self._build_transition(
+                    nIn, int(args.reduction * nIn), outSc, off, args))
+                nIn = int(args.reduction * nIn)
         return nn.Sequential(*layers), nIn
 
-    def _build_transition(self, nIn, nOut, outScales, offset, args):
-        net = []
-        for i in range(outScales):
-            net.append(ConvBasic(nIn * args.grFactor[offset + i],
-                                 nOut * args.grFactor[offset + i],
-                                 kernel=1, stride=1, padding=0))
-        return ParallelModule(net)
+    def _build_transition(self, nIn, nOut, outSc, off, args):
+        nets = []
+        for i in range(outSc):
+            nets.append(ConvBasic(nIn*args.grFactor[off+i],
+                                  nOut*args.grFactor[off+i], 1, 1, 0))
+        return ParallelModule(nets)
 
-    def _build_classifier_cifar(self, nIn, num_classes):
-        inter1, inter2 = 128, 128
+    def _build_classifier_cifar(self, nIn, n_cls):
         conv = nn.Sequential(
-            ConvBasic(nIn, inter1, kernel=3, stride=2, padding=1),
-            ConvBasic(inter1, inter2, kernel=3, stride=2, padding=1),
-            nn.AvgPool2d(2),
-        )
-        return ClassifierModule(conv, inter2, num_classes)
-
-    def _build_classifier_imagenet(self, nIn, num_classes):
-        conv = nn.Sequential(
-            ConvBasic(nIn, nIn, kernel=3, stride=2, padding=1),
-            ConvBasic(nIn, nIn, kernel=3, stride=2, padding=1),
+            ConvBasic(nIn, 128, 3, 2, 1),
+            ConvBasic(128, 128, 3, 2, 1),
             nn.AvgPool2d(2)
         )
-        return ClassifierModule(conv, nIn, num_classes)
+        return ClassifierModule(conv, 128, n_cls)
 
+    def _build_classifier_imagenet(self, nIn, n_cls):
+        conv = nn.Sequential(
+            ConvBasic(nIn, nIn, 3, 2, 1),
+            ConvBasic(nIn, nIn, 3, 2, 1),
+            nn.AvgPool2d(2)
+        )
+        return ClassifierModule(conv, nIn, n_cls)
+
+    @staticmethod
+    def _gather_batch(x_scales, keep_mask):
+        return [t[keep_mask] for t in x_scales]
+
+        # -----------------------------------------------------------------
+    # Forward with 3 modes
     # -----------------------------------------------------------------
-    # === CHANGED === forward with three modes
-    # -----------------------------------------------------------------
-    def forward(self, x, *, return_gates=False, use_gates=False, gate_thresh=0.5):
+    # def forward(self, x, *, return_gates=False,
+    #             use_gates=False, gate_thresh=0.5, return_exit=False):
+    #     """
+    #     Modes:
+    #     • default             → list[Tensor] (all exits)
+    #     • return_gates=True   → (cls_list, gate_logit_list)
+    #     • use_gates=True      → single logits (early‑exit online)
+    #                             + if return_exit=True also returns exit_id
+    #     """
+    #     assert sum([return_gates, use_gates]) <= 1, \
+    #         "Choose only one special mode at a time."
+    #
+    #     cls_outs, gate_outs = [], []
+    #     for i in range(self.nBlocks):
+    #         x = self.blocks[i](x)
+    #         feat   = x[-1]
+    #         g_log  = self.gates[i](feat)          # (B,1)
+    #         c_log  = self.classifier[i](x)       # (B,C)
+    #         gate_outs.append(g_log); cls_outs.append(c_log)
+    #
+    #         """if use_gates:
+    #             if torch.sigmoid(g_log).ge(gate_thresh).all():
+    #                 return (c_log, i) if return_exit else c_log"""
+    #         if use_gates:
+    #             exit_mask = torch.sigmoid(g_log).ge(gate_thresh).squeeze(1)  # (B,)
+    #             if exit_mask.sum() == x.size(0):
+    #                 return (c_log, i) if return_exit else c_log
+    #
+    #     if return_gates:
+    #         return cls_outs, gate_outs
+    #     if return_exit:                           # fell through to last exit
+    #         return cls_outs[-1], self.nBlocks - 1
+    #     return cls_outs
+
+    def forward(self, x, *, return_gates=False,
+                use_gates=False, gate_thresh=0.5, return_exit=False):
         """
-        Default:            return [logits_exit0, ..., logits_exitK]
-        return_gates=True:  return (cls_list, gate_list) ; gate_list are logits (B,1)
-        use_gates=True:     early-exit online, return a single logits tensor.
+        default           → list[Tensor]             (all exits)
+        return_gates=True → (cls_list, gate_list)
+        use_gates=True    → per‑sample early‑exit:
+                            returns (logits, exit_ids)  if return_exit=True
+                            else returns logits (B,C)
         """
-        assert not (return_gates and use_gates), \
-            "Use either return_gates=True or use_gates=True, not both."
+        assert sum([return_gates, use_gates]) <= 1
 
-        cls_outs, gate_outs = [], []
-        for i in range(self.nBlocks):
-            x = self.blocks[i](x)         # list of scales
-            feat = x[-1]                  # finest scale feature for heads
-            g_logit = self.gates[i](feat) # (B,1)
-            c_logit = self.classifier[i](x)  # (B,C)
+        # ----- vanilla multi‑exit path (unchanged) -----
+        if not use_gates:
+            cls, gates = [], []
+            for i in range(self.nBlocks):
+                x = self.blocks[i](x)
+                gates.append(self.gates[i](x[-1]))
+                cls.append(self.classifier[i](x))
+            if return_gates:
+                return cls, gates
+            return cls
 
-            gate_outs.append(g_logit)
-            cls_outs.append(c_logit)
+        # ------------- per‑sample early‑exit -------------
+        device = x[0].device if isinstance(x, list) else x.device
+        B = x[0].size(0) if isinstance(x, list) else x.size(0)
 
-            if use_gates:
-                if torch.sigmoid(g_logit).ge(gate_thresh).all():
-                    return c_logit  # early exit for the whole batch
+        logits_buffer = [None] * B
+        exit_ids = torch.empty(B, dtype=torch.long, device=device)
 
-        if return_gates:
-            return cls_outs, gate_outs
-        return cls_outs
+        active_idx = torch.arange(B, device=device)  # global indices of sub‑batch
+
+        for blk in range(self.nBlocks):
+            x = self.blocks[blk](x)
+            g_log = self.gates[blk](x[-1])  # (b_active,1)
+            c_log = self.classifier[blk](x)  # (b_active,C)
+
+            exit_mask = torch.sigmoid(g_log).squeeze(1) >= gate_thresh  # Bool
+            if exit_mask.any():
+                done_idx = active_idx[exit_mask]  # global sample ids
+                logits_out = c_log[exit_mask]
+                for gid, log in zip(done_idx.tolist(), logits_out):
+                    logits_buffer[gid] = log
+                exit_ids[done_idx] = blk
+
+            # keep undecided samples
+            keep_mask = ~exit_mask
+            if keep_mask.sum() == 0:  # everyone exited
+                break
+            active_idx = active_idx[keep_mask]
+            x = self._gather_batch(x, keep_mask)
+
+        # samples that never crossed the threshold take logits from *last* block
+        if len(active_idx) > 0:
+            final_c_log = self.classifier[-1](x) if blk != self.nBlocks - 1 else c_log
+            for gid, log in zip(active_idx.tolist(), final_c_log):
+                logits_buffer[gid] = log
+            exit_ids[active_idx] = self.nBlocks - 1
+
+        logits_tensor = torch.stack(logits_buffer, 0)  # (B,C)
+        if return_exit:
+            return logits_tensor, exit_ids
+        return logits_tensor
+
