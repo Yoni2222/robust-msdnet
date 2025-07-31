@@ -344,6 +344,7 @@ class MSDNet(nn.Module):
             # keep undecided samples
             keep_mask = ~exit_mask
             if keep_mask.sum() == 0:  # everyone exited
+                active_idx = active_idx.new_empty(0)
                 break
             active_idx = active_idx[keep_mask]
             x = self._gather_batch(x, keep_mask)

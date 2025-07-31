@@ -707,7 +707,7 @@ def main():
                                               eps=args.epsilon,
                                               alpha=args.alpha,
                                               iters=args.attack_iters)
-            robust_evaluate(test_loader, model, fn, gate_criterion)
+            robust_evaluate(test_loader, model, fn)
         elif args.autoattack:
             autoattack_eval(test_loader, model, norm=args.norm, eps=args.epsilon)
         if args.dyn_eval:
@@ -838,117 +838,128 @@ def validate(val_loader, model, criterion, gate_criterion):
     losses = AverageMeter()
     top1 = [AverageMeter() for _ in range(args.nBlocks)]
     top5 = [AverageMeter() for _ in range(args.nBlocks)]
-    exit_counter = [0] * args.nBlocks           # NEW
-    overall_correct = 0                         # NEW
+    exit_counter, overall_correct = [0]*args.nBlocks, 0
 
-    n_flops = torch.load(os.path.join(args.save, 'flops.pth'))
+    n_flops = torch.load(os.path.join(args.save, "flops.pth"))
     model.eval(); end = time.time()
 
     with torch.no_grad():
-        for i, (x, y) in enumerate(val_loader):
+        for x, y in val_loader:
             x, y = x.to(DEVICE), y.to(DEVICE)
             data_time.update(time.time() - end)
 
-            # ------------- forward -------------
-            """if args.use_gates_infer:
-                logits, exit_id = model(x, use_gates=True,
-                                        gate_thresh=args.gate_thresh,
-                                        return_exit=True)
-                cls_logits = [logits]
-                exit_ids   = [exit_id]"""
-            if args.use_gates_infer:
-                logits, exit_ids = model(x, use_gates=True,
-                                         gate_thresh=args.gate_thresh,
-                                         return_exit=True)  # logits (B,C)
+            # --------------------------------------------------
+            # 1) Forward pass
+            # --------------------------------------------------
+            if args.use_gates_infer:                     # per‑sample EE
+                logits, exit_ids = model(
+                    x, use_gates=True,
+                    gate_thresh=args.gate_thresh,
+                    return_exit=True,
+                )                     # logits (B,C)  exit_ids (B,)
+                loss = criterion(logits, y)              # one set of logits
+                losses.update(loss.item(), y.size(0))
+
+                # --------------------------------------------------
+                # 2) Per‑sample accuracy accounting
+                # --------------------------------------------------
                 preds = logits.argmax(1)
                 for k in range(args.nBlocks):
                     mask = exit_ids == k
                     if mask.any():
-                        correct = (preds[mask] == y[mask]).float().sum().item()
-                        acc1 = 100.0 * correct / mask.sum().item()
-                        top1[k].update(acc1, mask.sum().item())
-                        # top‑5 (optional)
+                        correct_k = (preds[mask] == y[mask]).sum().item()
+                        top1[k].update(100.0 * correct_k / mask.sum().item(),
+                                       mask.sum().item())
+
                         _, top5_pred = logits[mask].topk(5, 1, True, True)
-                        correct5 = (top5_pred == y[mask].unsqueeze(1)).any(1).float().sum().item()
-                        acc5 = 100.0 * correct5 / mask.sum().item()
-                        top5[k].update(acc5, mask.sum().item())
+                        correct5_k = (top5_pred == y[mask].unsqueeze(1))\
+                                         .any(1).float().sum().item()
+                        top5[k].update(100.0 * correct5_k / mask.sum().item(),
+                                       mask.sum().item())
+
                         exit_counter[k] += mask.sum().item()
-                        overall_correct += correct
-            else:
+                        overall_correct += correct_k
+
+            else:                                        # classic all‑exits
                 outs = model(x); outs = outs if isinstance(outs, list) else [outs]
-                cls_logits = [get_cls(o) for o in outs]
-                exit_ids   = list(range(len(cls_logits)))
+                loss = sum(criterion(o, y) for o in outs) / len(outs)
+                losses.update(loss.item(), y.size(0))
 
-            # ------------- loss -------------
-            loss = sum(criterion(l, y) for l in cls_logits) / len(cls_logits)
-            losses.update(loss.item(), x.size(0))
-
-            # ------------- accuracy & meters -------------
-            for l, idx in zip(cls_logits, exit_ids):
-                prec1, prec5 = accuracy(l, y, topk=(1, 5))
-                top1[idx].update(prec1.item(), x.size(0))
-                top5[idx].update(prec5.item(), x.size(0))
-                exit_counter[idx] += y.size(0)
-                overall_correct   += (l.argmax(1) == y).sum().item()
+                # --------------------------------------------------
+                # 2) Exit‑wise accuracy
+                # --------------------------------------------------
+                for j, o in enumerate(outs):
+                    prec1, prec5 = accuracy(o, y, topk=(1,5))
+                    top1[j].update(prec1.item(), y.size(0))
+                    top5[j].update(prec5.item(), y.size(0))
+                    exit_counter[j] += y.size(0)
+                    overall_correct += (o.argmax(1) == y).sum().item()
 
             batch_time.update(time.time() - end); end = time.time()
 
-    total_samples = sum(exit_counter)
-    avg_acc = 100.0 * overall_correct / total_samples if total_samples else 0.0
+    # --------------------------------------------------
+    # 3) Summary
+    # --------------------------------------------------
+    total = sum(exit_counter)
+    avg_acc = 100.0 * overall_correct / total if total else 0.0
 
     print("\nSamples per exit:", exit_counter)
     for j in range(args.nBlocks):
         print(f" * Exit {j}: prec@1 {top1[j].avg:.3f}  prec@5 {top5[j].avg:.3f}")
     print(f"Average top‑1 accuracy (all exits combined): {avg_acc:.3f}%")
 
-    # FLOPs summary (unchanged) ...
-    # --------------------------------------------------
+    # FLOPs report stays the same …
     return losses.avg, top1[-1].avg, top5[-1].avg
 
 
-def robust_evaluate(data_loader, model, attack_fn, gate_criterion):
+def robust_evaluate(data_loader, model, attack_fn):
     model.eval()
-    n_exits = args.nBlocks
-    correct = [0] * n_exits
-    seen    = [0] * n_exits                     # NEW
+    n_exits   = args.nBlocks
+    correct   = [0] * n_exits     # # of correct predictions at each exit
+    seen      = [0] * n_exits     # # of samples that exited there
 
     for x, y in data_loader:
-        x, y = x.to(DEVICE), y.to(DEVICE)
-        x_adv = attack_fn(model, x, y)
+        x, y   = x.to(DEVICE), y.to(DEVICE)
+        x_adv  = attack_fn(model, x, y)           # FGSM / PGD / …
 
         with torch.no_grad():
-            """if args.use_gates_infer:
-                logits, exit_id = model(x_adv, use_gates=True,
-                                         gate_thresh=args.gate_thresh,
-                                         return_exit=True)
-                pred = logits.argmax(1)
-                correct[exit_id] += (pred == y).sum().item()
-                seen[exit_id]    += y.size(0)"""
+
+            # ----------------------------------------------------------
+            # 1) Per‑sample early‑exit branch
+            # ----------------------------------------------------------
             if args.use_gates_infer:
-                logits, exit_ids = model(x_adv, use_gates=True,
-                                         gate_thresh=args.gate_thresh,
-                                         return_exit=True)
+                logits, exit_ids = model(            # ← returns per‑sample exit
+                    x_adv,
+                    use_gates=True,
+                    gate_thresh=args.gate_thresh,
+                    return_exit=True
+                )                                   # logits  (B,C)
                 preds = logits.argmax(1)
-                for k in range(args.nBlocks):
+
+                for k in range(n_exits):            # aggregate by exit
                     mask = exit_ids == k
                     if mask.any():
                         correct[k] += (preds[mask] == y[mask]).sum().item()
-                        seen[k] += mask.sum().item()
+                        seen[k]    += mask.sum().item()
+
+            # ----------------------------------------------------------
+            # 2) Classic “evaluate all exits” branch
+            # ----------------------------------------------------------
             else:
-                outs = model(x_adv); outs = outs if isinstance(outs, list) else [outs]
-                for idx, o in enumerate(outs):
-                    pred = get_cls(o).argmax(1)
-                    correct[idx] += (pred == y).sum().item()
-                    seen[idx]    += y.size(0)
+                outs = model(x_adv)
+                outs = outs if isinstance(outs, list) else [outs]
+                for k, o in enumerate(outs):        # same y for every exit
+                    pred = o.argmax(1)
+                    correct[k] += (pred == y).sum().item()
+                    seen[k]    += y.size(0)
 
-    # print per‑exit
-    for j in range(n_exits):
-        acc = 100.0 * correct[j] / seen[j] if seen[j] else 0.0
-        print(f"Robust prec@1 – exit {j}: {acc:5.2f}%  ({correct[j]}/{seen[j]})")
+    # ----------------------------- summary -----------------------------
+    for k in range(n_exits):
+        acc = 100.0 * correct[k] / seen[k] if seen[k] else 0.0
+        print(f"Robust prec@1 – exit {k}: {acc:5.2f}%  ({correct[k]}/{seen[k]})")
 
-    overall_correct = sum(correct)
-    overall_seen    = sum(seen)
-    overall_acc = 100.0 * overall_correct / overall_seen if overall_seen else 0.0
+    overall_seen = sum(seen)
+    overall_acc  = 100.0 * sum(correct) / overall_seen if overall_seen else 0.0
     print(f"\nAverage robust top‑1 accuracy (all exits): {overall_acc:5.2f}%")
 
 # ---------------------------------------------------------------------
