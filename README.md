@@ -33,15 +33,13 @@ Everything can be run via command-line arguments to main_awp.py, using either yo
 
 Typical training command:
 
-bash
-Copy
-Edit
+
 python main_awp.py --data cifar10 --data-root ./data \
   --arch gated_mixture --nBlocks 5 --batch-size 128 \
   --attack pgd --epsilon 8 --alpha 1 --attack-iters 40 --norm l_inf \
   --awp-gamma 0.005 --awp-warmup 5
-Evaluation (after training):
 
+Evaluation (after training):
 python main_awp.py --eval-only --adv-eval --use-gates-infer --gate-thresh 0.7 \
   --evaluate-from path/to/model_checkpoint.pth.tar
 
