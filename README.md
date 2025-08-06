@@ -1,65 +1,64 @@
-# MSDNet-PyTorch
+This repository includes a PyTorch-based implementation of a multi-exit convolutional neural network with confidence‑gated early exits, 
+trained using PGD adversarial training enhanced with Adversarial Weight Perturbation (AWP). 
+Designed to strike a balance between inference efficiency and adversarial robustness on CIFAR‑10 and CIFAR‑100.
 
-This repository contains the PyTorch implementation of the paper [Multi-Scale Dense Networks for Resource Efficient Image Classification](https://arxiv.org/pdf/1703.09844.pdf)
+Features
+Multi-scale convolutional backbone with multiple classifier heads
 
-Citation:
+Learnable confidence gates enabling conditional early exit per sample
 
-    @inproceedings{huang2018multi,
-        title={Multi-scale dense networks for resource efficient image classification},
-        author={Huang, Gao and Chen, Danlu and Li, Tianhong and Wu, Felix and van der Maaten, Laurens and Weinberger, Kilian Q},
-        journal={ICLR},
-        year={2018}
-    }
+Adversarial robustness via integrated PGD + AWP training
 
-## Dependencies:
+Setup Instructions
+Clone the repository
 
-+ Python3
-+ PyTorch >= 0.4.0
+Install dependencies
+Prepare a virtual environment and run:
 
-## Network Configurations
+bash
+Copy
+Edit
+pip install torch torchvision numpy matplotlib autoattack
+Optionally:
 
-#### Train an MSDNet (block=7) on CIFAR-100 for *anytime prediction*: 
+bash
+Copy
+Edit
+pip freeze > requirements.txt
+Enable dataset download
+Ensure your configuration uses download=True for CIFAR datasets so the data is fetched automatically during first run.
 
-```
-python3 main.py --data-root /PATH/TO/CIFAR100 --data cifar100 --save /PATH/TO/SAVE \
-                --arch msdnet --batch-size 64 --epochs 300 --nBlocks 7 \
-                --stepmode even --step 2 --base 4 --nChannels 16 \
-                -j 16
-```
+Running Training & Evaluation
+Everything can be run via command-line arguments to main_awp.py, using either your system terminal or PyCharm’s integrated terminal (same functionality).
 
-#### Train an MSDNet (block=5) on CIFAR-100 for *efficient batch computation*:
+Typical training command:
 
-```
-python3 main.py --data-root /PATH/TO/CIFAR100 --data cifar100 --save /PATH/TO/SAVE \
-                --arch msdnet --batch-size 64 --epochs 300 --nBlocks 5 \
-                --stepmode lin_grow --step 1 --base 1 --nChannels 16 --use-valid \
-                -j 16
-```
+bash
+Copy
+Edit
+python main_awp.py --data cifar10 --data-root ./data \
+  --arch gated_mixture --nBlocks 5 --batch-size 128 \
+  --attack pgd --epsilon 8 --alpha 1 --attack-iters 40 --norm l_inf \
+  --awp-gamma 0.005 --awp-warmup 5
+Evaluation (after training):
 
-#### Train an MSDNet (block=5, step=4) on ImageNet:
+python main_awp.py --eval-only --adv-eval --use-gates-infer --gate-thresh 0.7 \
+  --evaluate-from path/to/model_checkpoint.pth.tar
 
-```
+- Results & Figures
+Scripts are included to reproduce the following results:
 
-python3 main.py --data-root /PATH/TO/ImageNet --data ImageNet --save /PATH/TO/SAVE \
-                --arch msdnet --batch-size 256 --epochs 90 --nBlocks 5 \
-                --stepmode even --step 4 --base 4 --nChannels 32 --growthRate 16 \
-                --grFactor 1-2-4-4 --bnFactor 1-2-4-4 \
-                --use-valid --gpu 0,1,2,3 -j 16 \
-```
+Standard, PGD-40, and AutoAttack robust accuracies
 
-## Pre-trained MSDNet Models on ImageNet
-1. [Download](https://www.dropbox.com/sh/7p758wfcq4wm6lf/AACU4hFtV1_4UQavexrsSs1Ba?dl=0) pretrained models and validation indeces on ImageNet.
-2. Test script:
-```
-python3 main.py --data-root /PATH/TO/ImageNet --data ImageNet --save /PATH/TO/SAVE \
-                --arch msdnet --batch-size 256 --epochs 90 --nBlocks 5 \
-                --stepmode even --step 4 --base 4 --nChannels 32 --growthRate 16 \
-                --grFactor 1-2-4-4 --bnFactor 1-2-4-4 \
-                --evalmode dynamic --evaluate-from /PATH/TO/CHECKPOINT/ \
-                --use-valid --gpu 0,1,2,3 -j 16 \
-```
-   
+Exit-mix distribution (percent of samples exiting at each threshold τ)
 
-## Acknowledgments
+Per-exit robustness when evaluated on all samples (no early exit)
 
-We would like to take immense thanks to [Danlu Chen](https://taineleau.me/), for providing us the prime version of codes.
+Visualizations available for CIFAR‑10 and CIFAR‑100
+
+- Reproducibility Notes
+Tested with Python 3.8+, PyTorch 2.x on CUDA-enabled GPU
+
+Dataset is downloaded to ./data/ during first run
+
+Ensure correct thresholds and n‑blocks match training settings when evaluating

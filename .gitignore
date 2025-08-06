@@ -106,8 +106,11 @@ ENV/
 # result files
 results/*
 
+data/
+save/
+scripts/
 # cifar
-cifar-100-python/*
-cifar-100-python.*
+cifar-10-python/*
+cifar-10-python.*
 
 .DS_Store
